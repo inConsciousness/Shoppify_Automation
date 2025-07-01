@@ -1,0 +1,37 @@
+{
+  "aws_resources": {
+    "region": "us-east-2",
+    "s3_bucket": {
+      "name": "shopifyapi369",
+      "arn": "arn:aws:s3:::shopifyapi369"
+    },
+    "iam_role": {
+      "name": "ShopifyApi_project369",
+      "arn": "arn:aws:iam::195275669634:role/ShopifyApi_project369"
+    },
+    "lambda_function": {
+      "name": "shopify-ai-processor",
+      "runtime": "python3.9",
+      "timeout": 900,
+      "memory_size": 1024
+    },
+    "glue_job": {
+      "name": "shopify-etl-job",
+      "type": "glueetl",
+      "worker_type": "G.1X",
+      "number_of_workers": 2,
+      "timeout": 2880
+    },
+    "step_function": {
+      "name": "shopify-automation-workflow"
+    }
+  },
+  "s3_paths": {
+    "raw_data": "s3://shopifyapi369/data/raw/",
+    "clean_data": "s3://shopifyapi369/data/clean/",
+    "scripts": "s3://shopifyapi369/scripts/",
+    "lambdas": "s3://shopifyapi369/lambdas/",
+    "reports": "s3://shopifyapi369/reports/",
+    "temp": "s3://shopifyapi369/temp/"
+  }
+} 

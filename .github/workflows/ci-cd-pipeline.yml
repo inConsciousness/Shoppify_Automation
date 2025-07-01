@@ -1,0 +1,213 @@
+name: Shopify AI Automation CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-2
+  S3_BUCKET: shopifyapi369
+  IAM_ROLE_ARN: arn:aws:iam::195275669634:role/ShopifyApi_project369
+  LAMBDA_FUNCTION_NAME: shopify-ai-processor
+  GLUE_JOB_NAME: shopify-etl-job
+  STEP_FUNCTION_NAME: shopify-automation-workflow
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v --cov=spark_jobs --cov=lambda --cov-report=xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run Bandit security scan
+      run: |
+        pip install bandit
+        bandit -r . -f json -o bandit-report.json || true
+    
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-scan-results
+        path: bandit-report.json
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create Lambda deployment package
+      run: |
+        cd lambda
+        zip -r ../lambda_package.zip .
+        cd ..
+    
+    - name: Deploy Lambda function
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+          --zip-file fileb://lambda_package.zip \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Update Lambda environment variables
+      run: |
+        aws lambda update-function-configuration \
+          --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+          --environment Variables='{S3_BUCKET_NAME=${{ env.S3_BUCKET }},AWS_DEFAULT_REGION=${{ env.AWS_REGION }}}' \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Upload ETL script to S3
+      run: |
+        aws s3 cp spark_jobs/example_etl.py s3://${{ env.S3_BUCKET }}/scripts/example_etl.py
+    
+    - name: Update Glue job
+      run: |
+        aws glue update-job \
+          --job-name ${{ env.GLUE_JOB_NAME }} \
+          --job-update '{
+            "Command": {
+              "Name": "glueetl",
+              "ScriptLocation": "s3://${{ env.S3_BUCKET }}/scripts/example_etl.py",
+              "PythonVersion": "3"
+            },
+            "DefaultArguments": {
+              "--job-language": "python",
+              "--job-bookmark-option": "job-bookmark-enable",
+              "--input-path": "s3://${{ env.S3_BUCKET }}/data/raw/",
+              "--output-path": "s3://${{ env.S3_BUCKET }}/data/clean/",
+              "--s3-bucket": "${{ env.S3_BUCKET }}"
+            },
+            "MaxRetries": 0,
+            "Timeout": 2880,
+            "WorkerType": "G.1X",
+            "NumberOfWorkers": 2,
+            "GlueVersion": "4.0"
+          }' \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Upload sample data to S3
+      run: |
+        aws s3 cp data/sample_products.csv s3://${{ env.S3_BUCKET }}/data/raw/sample_products.csv
+    
+    - name: Clean up deployment artifacts
+      run: |
+        rm -f lambda_package.zip
+
+  trigger-etl:
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Trigger ETL job
+      run: |
+        aws glue start-job-run \
+          --job-name ${{ env.GLUE_JOB_NAME }} \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Wait for ETL completion
+      run: |
+        echo "Waiting for ETL job to complete..."
+        sleep 300  # Wait 5 minutes for job to start
+        
+        # Check job status
+        JOB_RUN_ID=$(aws glue get-job-runs --job-name ${{ env.GLUE_JOB_NAME }} --region ${{ env.AWS_REGION }} --query 'JobRuns[0].Id' --output text)
+        echo "Monitoring job run: $JOB_RUN_ID"
+        
+        # Wait for completion (max 30 minutes)
+        for i in {1..30}; do
+          STATUS=$(aws glue get-job-run --job-name ${{ env.GLUE_JOB_NAME }} --run-id $JOB_RUN_ID --region ${{ env.AWS_REGION }} --query 'JobRun.JobRunState' --output text)
+          echo "Job status: $STATUS"
+          
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "✅ ETL job completed successfully!"
+            break
+          elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "STOPPED" ]; then
+            echo "❌ ETL job failed with status: $STATUS"
+            exit 1
+          fi
+          
+          sleep 60  # Wait 1 minute before checking again
+        done
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [build-and-deploy, trigger-etl]
+    if: always()
+    
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.build-and-deploy.result }}" = "success" ] && [ "${{ needs.trigger-etl.result }}" = "success" ]; then
+          echo "🎉 Deployment successful! All components deployed and ETL job completed."
+        else
+          echo "❌ Deployment failed. Check the logs for details."
+          exit 1
+        fi 

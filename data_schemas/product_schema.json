@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Product title/name",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "sku": {
+      "type": "string",
+      "description": "Stock Keeping Unit - unique product identifier",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "vendor": {
+      "type": "string",
+      "description": "Product vendor/manufacturer",
+      "maxLength": 100
+    },
+    "product_type": {
+      "type": "string",
+      "description": "Product category/type",
+      "maxLength": 100
+    },
+    "tags": {
+      "type": "string",
+      "description": "Comma-separated product tags",
+      "maxLength": 500
+    },
+    "price": {
+      "type": "number",
+      "description": "Product price",
+      "minimum": 0
+    },
+    "description": {
+      "type": "string",
+      "description": "Product description",
+      "maxLength": 2000
+    },
+    "features": {
+      "type": "string",
+      "description": "Product features for SEO optimization",
+      "maxLength": 1000
+    },
+    "inventory_quantity": {
+      "type": "integer",
+      "description": "Available inventory quantity",
+      "minimum": 0
+    },
+    "weight": {
+      "type": "number",
+      "description": "Product weight in grams",
+      "minimum": 0
+    },
+    "requires_shipping": {
+      "type": "boolean",
+      "description": "Whether product requires shipping"
+    },
+    "taxable": {
+      "type": "boolean",
+      "description": "Whether product is taxable"
+    },
+    "barcode": {
+      "type": "string",
+      "description": "Product barcode/UPC",
+      "maxLength": 50
+    },
+    "images": {
+      "type": "array",
+      "description": "Array of product image URLs",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    }
+  },
+  "required": ["title", "sku"],
+  "additionalProperties": false
+} 

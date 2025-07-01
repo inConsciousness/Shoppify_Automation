@@ -1,0 +1,162 @@
+name: Shopify AI Automation CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-2
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v --cov=spark_jobs --cov=lambda --cov-report=xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install boto3
+    
+    - name: Create deployment package
+      run: |
+        mkdir -p deployment
+        cp -r lambda/* deployment/
+        cp requirements.txt deployment/
+        cd deployment
+        pip install -r requirements.txt -t .
+        zip -r ../lambda-deployment.zip .
+    
+    - name: Deploy Lambda function
+      run: |
+        aws lambda update-function-code \
+          --function-name shopify-ai-processor \
+          --zip-file fileb://lambda-deployment.zip \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Update Lambda environment variables
+      run: |
+        aws lambda update-function-configuration \
+          --function-name shopify-ai-processor \
+          --environment Variables='{
+            "OPENAI_API_KEY":"${{ secrets.OPENAI_API_KEY }}",
+            "DEEPSEEK_API_KEY":"${{ secrets.DEEPSEEK_API_KEY }}",
+            "SHOPIFY_SHOP_URL":"${{ secrets.SHOPIFY_SHOP_URL }}",
+            "SHOPIFY_ACCESS_TOKEN":"${{ secrets.SHOPIFY_ACCESS_TOKEN }}",
+            "S3_BUCKET_NAME":"shopifyapi369"
+          }' \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Upload ETL script to S3
+      run: |
+        aws s3 cp spark_jobs/example_etl.py s3://shopifyapi369/scripts/example_etl.py
+    
+    - name: Update Glue job
+      run: |
+        aws glue update-job \
+          --job-name shopify-etl-job \
+          --job-update '{
+            "Command": {
+              "Name": "glueetl",
+              "ScriptLocation": "s3://shopifyapi369/scripts/example_etl.py",
+              "PythonVersion": "3"
+            },
+            "DefaultArguments": {
+              "--job-language": "python",
+              "--job-bookmark-option": "job-bookmark-enable"
+            },
+            "ExecutionProperty": {
+              "MaxConcurrentRuns": 1
+            },
+            "MaxRetries": 3,
+            "Timeout": 2880,
+            "WorkerType": "G.1X",
+            "NumberOfWorkers": 2
+          }' \
+          --region ${{ env.AWS_REGION }}
+    
+    - name: Upload sample data
+      run: |
+        aws s3 cp data/sample_products.csv s3://shopifyapi369/data/raw/ || echo "Sample data not found, skipping upload"
+    
+    - name: Trigger ETL job
+      run: |
+        aws glue start-job-run --job-name shopify-etl-job --region ${{ env.AWS_REGION }}
+    
+    - name: Wait for ETL completion
+      run: |
+        echo "Waiting for ETL job to complete..."
+        sleep 60
+        aws glue get-job-runs --job-name shopify-etl-job --max-items 1 --region ${{ env.AWS_REGION }}
+    
+    - name: Test Lambda function
+      run: |
+        aws lambda invoke \
+          --function-name shopify-ai-processor \
+          --payload '{"test": true}' \
+          response.json \
+          --region ${{ env.AWS_REGION }}
+        cat response.json
+
+  notify:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.build-and-deploy.result }}" == "success" ]; then
+          echo "✅ Deployment successful!"
+        else
+          echo "❌ Deployment failed!"
+        fi 
