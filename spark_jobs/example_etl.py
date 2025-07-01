@@ -38,7 +38,12 @@ def create_spark_session():
         print(f"PySpark session creation failed: {e}")
         print("Falling back to pandas for local processing")
         return None
-
+def log_product_count(df):
+    """
+    Logs the number of products processed in the ETL job.
+    """
+    count = df.count()
+    print(f"Number of products processed: {count}")
 def clean_product_data_pandas(df):
     if not PANDAS_AVAILABLE:
         raise ImportError("Pandas is not available for fallback ETL.")
