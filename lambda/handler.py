@@ -14,6 +14,19 @@ def lambda_handler(event, context):
     """
     AWS Lambda handler for processing products with AI-generated descriptions
     """
+    # Check for required environment variables
+    required_env_vars = [
+        'S3_BUCKET_NAME', 'PARQUET_KEY', 'OPENAI_API_KEY',
+        'DEEPSEEK_API_KEY', 'SHOPIFY_API_URL', 'SHOPIFY_API_KEY'
+    ]
+    missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+    if missing_vars:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": f"Missing required environment variables: {', '.join(missing_vars)}"
+            })
+        }
     try:
         # Initialize AWS S3 client
         s3 = boto3.client('s3')
@@ -86,7 +99,7 @@ def lambda_handler(event, context):
                 "error": str(e)
             })
         }
-
+    
 def generate_seo_description(product, openai_api_key, deepseek_api_key):
     """
     Generate SEO-optimized description using OpenAI or DeepSeek as fallback
